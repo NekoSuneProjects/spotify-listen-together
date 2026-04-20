@@ -85,6 +85,13 @@ export default class LTPlayer {
         'requestSong',
         trackUri,
         data.name || 'UNKNOWN NAME',
+        {
+          artist_name: Array.isArray(data.artists)
+            ? data.artists.map((artist: any) => artist.name).filter(Boolean).join(', ')
+            : '',
+          album_title: data.album?.name || '',
+          image_url: data.album?.images?.[0]?.url || '',
+        },
       );
     } else {
       console.error('Failed to request song:', data?.error);
@@ -125,10 +132,63 @@ export default class LTPlayer {
     ogPlayerAPI.clearQueue();
   }
 
+  private async buildSongInfo(trackUri: string) {
+    const currentItem = Spicetify.Platform.PlayerAPI._state?.item;
+    const fallbackImage = currentItem?.images?.[0]?.['url'] || '';
+    const fallbackArtists =
+      currentItem?.artists?.map((artist: any) => artist.name) || [];
+    const fallbackArtistName = fallbackArtists.join(', ');
+    const fallbackAlbumName = currentItem?.album?.name || '';
+    const fallbackDurationMs =
+      currentItem?.duration?.milliseconds ||
+      currentItem?.duration?.totalMilliseconds ||
+      Spicetify.Player.getDuration() ||
+      0;
+
+    try {
+      const data = await getTrackData(trackUri);
+      if (data && data.error === undefined) {
+        const artists = Array.isArray(data.artists)
+          ? data.artists.map((artist: any) => artist.name).filter(Boolean)
+          : fallbackArtists;
+
+        return {
+          name: data.name || currentItem?.name || '',
+          image: data.album?.images?.[0]?.url || fallbackImage,
+          artistName: artists.join(', '),
+          artists,
+          albumName: data.album?.name || fallbackAlbumName,
+          durationMs: data.duration_ms || fallbackDurationMs,
+          trackUri,
+          paused: isTrackPaused(),
+        };
+      }
+    } catch (error) {
+      console.error('Failed to enrich current song info:', error);
+    }
+
+    return {
+      name: currentItem?.name || '',
+      image: fallbackImage,
+      artistName: fallbackArtistName,
+      artists: fallbackArtists,
+      albumName: fallbackAlbumName,
+      durationMs: fallbackDurationMs,
+      trackUri,
+      paused: isTrackPaused(),
+    };
+  }
+
+  private async emitCurrentSongInfo(trackUri: string) {
+    const songInfo = await this.buildSongInfo(trackUri);
+    this.client.socket?.emit('changedSong', trackUri, songInfo);
+  }
+
   onChangeSong(trackUri: string) {
     if (this.currentLoadingTrack === trackUri) {
-      if (this.trackLoaded)
-        this.client.socket?.emit('changedSong', this.currentLoadingTrack);
+      if (this.trackLoaded) {
+        this.emitCurrentSongInfo(this.currentLoadingTrack);
+      }
     } else {
       forcePlayTrack(trackUri);
     }
@@ -163,29 +223,7 @@ export default class LTPlayer {
             ogPlayerAPI.seekTo(0);
           }
 
-          const currentItem = Spicetify.Platform.PlayerAPI._state?.item;
-          const imageUrl = currentItem?.images?.[0]?.['url'] || '';
-          this.client.socket?.emit(
-            'changedSong',
-            trackUri,
-            {
-              name: currentItem?.name || '',
-              image: imageUrl,
-              artistName:
-                currentItem?.artists
-                  ?.map((artist: any) => artist.name)
-                  .join(', ') || '',
-              artists:
-                currentItem?.artists?.map((artist: any) => artist.name) || [],
-              albumName: currentItem?.album?.name || '',
-              durationMs:
-                currentItem?.duration?.milliseconds ||
-                currentItem?.duration?.totalMilliseconds ||
-                0,
-              trackUri,
-              paused: isTrackPaused(),
-            },
-          );
+          this.emitCurrentSongInfo(trackUri!);
 
           // Change volume back to normal
           if (this.volumeChangeEnabled) {
