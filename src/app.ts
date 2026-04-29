@@ -13,6 +13,7 @@ async function main() {
   const LTPlayer = await import('./ltPlayer');
   const ltPlayer = new LTPlayer.default();
   const settings = ltPlayer.settingsManager.settings;
+  ltPlayer.startUpdateChecker();
 
   if (
     settings.autoConnect &&

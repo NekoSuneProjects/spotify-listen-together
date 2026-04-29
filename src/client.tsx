@@ -9,6 +9,14 @@ import {
   getTrackType,
   isListenableTrackType,
 } from './utils/spotifyUtils';
+import { buildApiUrl, parseSessionTarget } from './utils/sessionUrl';
+
+type SessionInfo = {
+  id: string;
+  name: string;
+  isPublic: boolean;
+  url: string;
+};
 
 export default class Client {
   connecting = false;
@@ -28,6 +36,16 @@ export default class Client {
 
   connect(server?: string) {
     if (!server) server = this.ltPlayer.settingsManager.settings.server;
+
+    const target = parseSessionTarget(server);
+    if (target.server) {
+      server = target.server;
+    }
+
+    if (target.sessionId) {
+      this.ltPlayer.settingsManager.settings.sessionId = target.sessionId;
+      this.ltPlayer.settingsManager.saveSettings();
+    }
 
     if (getCurrentTrackUri() != '') {
       forcePlayTrack('');
@@ -49,10 +67,17 @@ export default class Client {
       reconnectionAttempts: 10,
       timeout: 5000,
       randomizationFactor: 0.5,
+      auth: {
+        sessionId: this.ltPlayer.settingsManager.settings.sessionId,
+      },
+      query: {
+        sessionId: this.ltPlayer.settingsManager.settings.sessionId,
+      },
     });
 
     this.socket.on('connect', () => {
       this.ltPlayer.ui.renderBottomInfo(<BottomInfo server={server!} />);
+      this.ltPlayer.checkForUpdates();
       this.connecting = false;
       this.connected = true;
       this.ltPlayer.isHost = false;
@@ -81,6 +106,16 @@ export default class Client {
       if (password != '') {
         this.socket!.emit('requestHost', password);
       }
+    });
+
+    this.socket.on('sessionInfo', (session: SessionInfo) => {
+      this.ltPlayer.settingsManager.settings.sessionId = session.id;
+      this.ltPlayer.settingsManager.settings.sessionName = session.name;
+      this.ltPlayer.settingsManager.settings.sessionPublic = session.isPublic;
+      this.ltPlayer.settingsManager.saveSettings();
+      this.ltPlayer.ui.renderBottomInfo(
+        <BottomInfo server={server!} session={session} />,
+      );
     });
 
     this.socket.onAny((ev: string, ...args: any[]) => {
@@ -120,7 +155,16 @@ export default class Client {
 
     this.socket.on('listeners', (clients: any) => {
       this.ltPlayer.ui.renderBottomInfo(
-        <BottomInfo server={server!} listeners={clients} />,
+        <BottomInfo
+          server={server!}
+          listeners={clients}
+          session={{
+            id: this.ltPlayer.settingsManager.settings.sessionId,
+            name: this.ltPlayer.settingsManager.settings.sessionName,
+            isPublic: this.ltPlayer.settingsManager.settings.sessionPublic,
+            url: '',
+          }}
+        />,
       );
     });
 
@@ -164,6 +208,13 @@ export default class Client {
       this.ltPlayer.onClearQueue();
     });
 
+    this.socket.on('sessionDeleted', () => {
+      this.ltPlayer.ui.windowMessage(
+        'This Listen Together session was deleted because it had no listeners for more than five minutes.',
+      );
+      this.disconnect();
+    });
+
     this.socket.on('adminSkipToNext', () => {
       if (this.ltPlayer.canControlPlayback()) {
         this.ltPlayer.skipToNextTrack();
@@ -195,7 +246,9 @@ export default class Client {
       if (reason === 'io server disconnect') {
         this.connect(this.server);
       } else if (reason === 'io client disconnect') {
-        this.disconnect();
+        if (this.socket) {
+          this.disconnect();
+        }
       }
     });
 
@@ -206,9 +259,10 @@ export default class Client {
     });
   }
 
-  disconnect() {
-    this.socket?.disconnect();
+  disconnect(showPopup = true) {
+    const socket = this.socket;
     this.socket = null;
+    socket?.disconnect();
     this.connected = false;
     this.ltPlayer.isHost = false;
     this.connecting = false;
@@ -216,6 +270,32 @@ export default class Client {
     // this.ltPlayer.ui.menuItems.joinServer?.setName("Join a server")
     // this.ltPlayer.ui.menuItems.requestHost?.setName("Request host");
     this.ltPlayer.ui.renderBottomInfo(<BottomInfo server={''} />);
-    this.ltPlayer.ui.disconnectedPopup();
+    if (showPopup) {
+      this.ltPlayer.ui.disconnectedPopup();
+    }
+  }
+
+  async createSession(
+    server: string,
+    sessionName: string,
+    isPublic: boolean,
+    hostPassword: string,
+  ) {
+    const response = await fetch(buildApiUrl(server, '/api/sessions'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: sessionName,
+        isPublic,
+        hostPassword,
+      }),
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data?.error || 'Session could not be created.');
+    }
+
+    return data.session as SessionInfo;
   }
 }

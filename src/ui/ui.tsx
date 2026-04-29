@@ -5,8 +5,13 @@ import BottomInfo from './bottomInfo';
 import { Popup } from './popup';
 import iconSvg from './ListenTogetherIcon';
 import pJson from '../../package.json';
+import {
+  buildSessionInviteUrl,
+  parseSessionTarget,
+} from '../utils/sessionUrl';
 
 import '../css/ui.scss';
+
 export default class UI {
   bottomInfoContainer: Element | null = null;
 
@@ -23,7 +28,6 @@ export default class UI {
         clearInterval(loop);
         this.bottomInfoContainer = document.createElement('div');
         this.bottomInfoContainer.id = 'listenTogether-bottomInfo';
-        // Add top margin of 10px to the bottom info container
         playingBar.appendChild(this.bottomInfoContainer);
         this.renderBottomInfo(<BottomInfo server="" />);
       }
@@ -47,23 +51,38 @@ export default class UI {
   }
 
   openMenu() {
+    const connected = this.ltPlayer.client.connected || this.ltPlayer.client.connecting;
     Popup.create(
       'Listen Together',
       () => Popup.close(),
       [],
       [
         <Popup.Button
-          text={
-            this.ltPlayer.client.connected || this.ltPlayer.client.connecting
-              ? 'Leave the server'
-              : 'Join a server'
-          }
-          onClick={() => this.onClickJoinAServer()}
+          text={connected ? 'Leave session' : 'Join session'}
+          onClick={() => this.onClickJoinASession()}
+        />,
+        <Popup.Button
+          text={'Create session'}
+          onClick={() => this.onClickCreateSession()}
         />,
         <Popup.Button
           text={this.ltPlayer.isHost ? 'Stop hosting' : 'Request host'}
           onClick={() => this.onClickRequestHost()}
           disabled={!this.ltPlayer.client.connected}
+        />,
+        <Popup.Button
+          text={'Session settings'}
+          onClick={() => this.onClickSessionSettings()}
+          disabled={!this.ltPlayer.client.connected}
+        />,
+        <Popup.Button
+          text={'Copy invite URL'}
+          onClick={() => this.onClickCopyInvite()}
+          disabled={!this.ltPlayer.settingsManager.settings.sessionId}
+        />,
+        <Popup.Button
+          text={'Plugin settings'}
+          onClick={() => this.onClickPluginSettings()}
         />,
         <Popup.Button text={'About'} onClick={() => this.onClickAbout()} />,
       ],
@@ -93,46 +112,133 @@ export default class UI {
         Popup.close();
       },
       ['Reconnect'],
-      [<Popup.Text text={'Disconnected from the server.'} />],
+      [<Popup.Text text={'Disconnected from the session.'} />],
+    );
+  }
+
+  updateAvailablePopup(version: string, updateUrl: string) {
+    Popup.create(
+      'Listen Together Update',
+      (btn) => {
+        if (btn === 'Update') {
+          window.location.href = updateUrl;
+        }
+
+        if (btn === 'Remind me later') {
+          this.ltPlayer.remindUpdateLater(version);
+          this.bottomMessage('Listen Together update reminder paused.');
+        }
+
+        Popup.close();
+      },
+      ['Update', 'Remind me later'],
+      [
+        <Popup.Text
+          text={`Listen Together v${version} is available. You are running v${pJson.version}.`}
+        />,
+      ],
     );
   }
 
   quickConnect(address: string) {
+    const target = parseSessionTarget(address);
+    const settings = this.ltPlayer.settingsManager.settings;
+
+    if (!target.server) {
+      return;
+    }
+
     if (
       !this.ltPlayer.client.connected &&
-      !this.ltPlayer.client.connecting &&
-      !!address
+      !this.ltPlayer.client.connecting
     ) {
-      this.ltPlayer.settingsManager.settings.server = address;
+      settings.server = target.server;
+      if (target.sessionId) {
+        settings.sessionId = target.sessionId;
+      }
       this.ltPlayer.settingsManager.saveSettings();
-      if (!this.ltPlayer.settingsManager.settings.name) {
-        this.onClickJoinAServer();
+
+      if (!settings.name) {
+        this.onClickJoinASession();
       } else {
-        this.ltPlayer.client.connect();
+        this.ltPlayer.client.connect(target.server);
       }
     }
   }
 
-  private onClickJoinAServer() {
+  private onClickJoinASession() {
     if (this.ltPlayer.client.connected || this.ltPlayer.client.connecting) {
       this.ltPlayer.client.disconnect();
-    } else {
-      this.joinServerPopup((btn, address, name, autoConnect) => {
-        if (btn === 'Host a server') {
-          window.location.href =
-            'https://heroku.com/deploy?template=https://github.com/NekoSuneProjects/spotify-listen-together-server';
-        } else {
-          Popup.close();
-          if (!!address && !!name) {
-            this.ltPlayer.settingsManager.settings.server = address;
-            this.ltPlayer.settingsManager.settings.name = name;
-            this.ltPlayer.settingsManager.settings.autoConnect = autoConnect;
-            this.ltPlayer.settingsManager.saveSettings();
-            this.ltPlayer.client.connect();
-          }
-        }
-      });
+      return;
     }
+
+    this.joinSessionPopup((btn, address, sessionId, name, autoConnect) => {
+      if (btn === 'Host a server') {
+        window.location.href =
+          'https://render.com/deploy?repo=https://github.com/NekoSuneProjects/spotify-listen-together-server';
+        return;
+      }
+
+      const target = parseSessionTarget(address);
+      const server = target.server || address.trim();
+      const nextSessionId = sessionId.trim() || target.sessionId;
+
+      Popup.close();
+      if (!!server && !!name) {
+        this.ltPlayer.settingsManager.settings.server = server;
+        this.ltPlayer.settingsManager.settings.sessionId = nextSessionId;
+        this.ltPlayer.settingsManager.settings.name = name;
+        this.ltPlayer.settingsManager.settings.autoConnect = autoConnect;
+        this.ltPlayer.settingsManager.saveSettings();
+        this.ltPlayer.client.connect(server);
+      }
+    });
+  }
+
+  private onClickCreateSession() {
+    this.createSessionPopup(async (
+      serverInput,
+      sessionName,
+      displayName,
+      password,
+      isPublic,
+      autoConnect,
+    ) => {
+      const target = parseSessionTarget(serverInput);
+      const server = target.server || serverInput.trim();
+
+      if (!server || !password || !displayName) {
+        this.windowMessage('Server, display name, and host password are required.');
+        return;
+      }
+
+      try {
+        const session = await this.ltPlayer.client.createSession(
+          server,
+          sessionName,
+          isPublic,
+          password,
+        );
+
+        const settings = this.ltPlayer.settingsManager.settings;
+        settings.server = server;
+        settings.sessionId = session.id;
+        settings.sessionName = session.name;
+        settings.sessionPublic = session.isPublic;
+        settings.name = displayName;
+        settings.password = password;
+        settings.autoConnect = autoConnect;
+        this.ltPlayer.settingsManager.saveSettings();
+
+        Popup.close();
+        if (this.ltPlayer.client.connected || this.ltPlayer.client.connecting) {
+          this.ltPlayer.client.disconnect(false);
+        }
+        this.ltPlayer.client.connect(server);
+      } catch (error: any) {
+        this.windowMessage(error?.message || 'Session could not be created.');
+      }
+    });
   }
 
   private onClickRequestHost() {
@@ -151,8 +257,108 @@ export default class UI {
         });
       }
     } else {
-      this.windowMessage('Please connect to a server before requesting host.');
+      this.windowMessage('Please connect to a session before requesting host.');
     }
+  }
+
+  private onClickSessionSettings() {
+    if (!this.ltPlayer.client.connected) {
+      this.windowMessage('Please connect to a session first.');
+      return;
+    }
+
+    let sessionName = this.ltPlayer.settingsManager.settings.sessionName || 'Listen Together Session';
+    let isPublic = this.ltPlayer.settingsManager.settings.sessionPublic;
+    Popup.create(
+      'Session Settings',
+      (btn) => {
+        if (btn !== 'Save') {
+          Popup.close();
+          return;
+        }
+
+        this.ltPlayer.client.socket?.emit(
+          'updateSession',
+          { name: sessionName, isPublic },
+          (response: any) => {
+            if (!response?.ok) {
+              this.windowMessage(response?.error || 'Session update failed.');
+              return;
+            }
+
+            const settings = this.ltPlayer.settingsManager.settings;
+            settings.sessionName = response.session.name;
+            settings.sessionPublic = response.session.isPublic;
+            this.ltPlayer.settingsManager.saveSettings();
+            this.bottomMessage('Session settings updated.');
+            Popup.close();
+          },
+        );
+      },
+      ['Save'],
+      [
+        <Popup.Textbox
+          name="Session name"
+          defaultValue={sessionName}
+          onInput={(text) => (sessionName = text)}
+        />,
+        <Popup.Checkbox
+          label="Public session"
+          defaultChecked={isPublic}
+          onChange={(checked) => (isPublic = checked)}
+        />,
+      ],
+    );
+  }
+
+  private onClickCopyInvite() {
+    const settings = this.ltPlayer.settingsManager.settings;
+    const inviteUrl = buildSessionInviteUrl(settings.server, settings.sessionId);
+
+    if (!inviteUrl) {
+      this.windowMessage('No session invite URL is available yet.');
+      return;
+    }
+
+    navigator.clipboard?.writeText(inviteUrl);
+    this.bottomMessage('Listen Together invite URL copied.');
+    Popup.close();
+  }
+
+  private onClickPluginSettings() {
+    const settings = this.ltPlayer.settingsManager.settings;
+    let updateNotifications = settings.updateNotifications;
+    let autoOpenUpdatePage = settings.autoOpenUpdatePage;
+
+    Popup.create(
+      'Plugin Settings',
+      (btn) => {
+        settings.updateNotifications = updateNotifications;
+        settings.autoOpenUpdatePage = autoOpenUpdatePage;
+        this.ltPlayer.settingsManager.saveSettings();
+
+        if (btn === 'Check now') {
+          this.ltPlayer.checkForUpdates(true);
+        } else {
+          this.bottomMessage('Listen Together settings saved.');
+        }
+
+        Popup.close();
+      },
+      ['Save', 'Check now'],
+      [
+        <Popup.Checkbox
+          label="Notify when updates are available"
+          defaultChecked={updateNotifications}
+          onChange={(checked) => (updateNotifications = checked)}
+        />,
+        <Popup.Checkbox
+          label="Open update page automatically"
+          defaultChecked={autoOpenUpdatePage}
+          onChange={(checked) => (autoOpenUpdatePage = checked)}
+        />,
+      ],
+    );
   }
 
   private onClickAbout() {
@@ -178,44 +384,121 @@ export default class UI {
     );
   }
 
-  private joinServerPopup(
+  private joinSessionPopup(
     callback: (
       btn: string | null,
       address: string,
+      sessionId: string,
       name: string,
       autoConnect: boolean,
     ) => void,
   ) {
     let address = '';
+    let sessionId = '';
     let name = '';
     let autoConnect = false;
+    const settings = this.ltPlayer.settingsManager.settings;
     Popup.create(
-      'Listen Together',
-      (btn) => callback(btn, address, name, autoConnect),
+      'Join Session',
+      (btn) => callback(btn, address, sessionId, name, autoConnect),
       ['Join', 'Host a server'],
       [
         <Popup.Textbox
-          name="Server address"
-          example="https://www.server.com/"
-          defaultValue={this.ltPlayer.settingsManager.settings.server}
+          name="Server or invite URL"
+          example="https://www.server.com/session/abc"
+          defaultValue={settings.server}
           onInput={(text) => {
             address = text;
           }}
         />,
         <Popup.Textbox
+          name="Session ID"
+          example="leave blank for main"
+          defaultValue={settings.sessionId}
+          onInput={(text) => {
+            sessionId = text;
+          }}
+        />,
+        <Popup.Textbox
           name="Your name"
           example="Joe"
-          defaultValue={this.ltPlayer.settingsManager.settings.name}
+          defaultValue={settings.name}
           onInput={(text) => {
             name = text;
           }}
         />,
         <Popup.Checkbox
           label="Autoconnect"
-          defaultChecked={this.ltPlayer.settingsManager.settings.autoConnect}
+          defaultChecked={settings.autoConnect}
           onChange={(checked) => {
             autoConnect = checked;
           }}
+        />,
+      ],
+    );
+  }
+
+  private createSessionPopup(
+    callback: (
+      server: string,
+      sessionName: string,
+      displayName: string,
+      password: string,
+      isPublic: boolean,
+      autoConnect: boolean,
+    ) => void,
+  ) {
+    const settings = this.ltPlayer.settingsManager.settings;
+    let server = settings.server;
+    let sessionName = settings.sessionName || 'Listen Together Session';
+    let displayName = settings.name;
+    let password = settings.password;
+    let isPublic = settings.sessionPublic;
+    let autoConnect = settings.autoConnect;
+
+    Popup.create(
+      'Create Session',
+      (btn) => {
+        if (btn === 'Create') {
+          callback(server, sessionName, displayName, password, isPublic, autoConnect);
+        } else {
+          Popup.close();
+        }
+      },
+      ['Create'],
+      [
+        <Popup.Textbox
+          name="Server address"
+          example="https://www.server.com"
+          defaultValue={server}
+          onInput={(text) => (server = text)}
+        />,
+        <Popup.Textbox
+          name="Session name"
+          example="VRChat Dance Night"
+          defaultValue={sessionName}
+          onInput={(text) => (sessionName = text)}
+        />,
+        <Popup.Textbox
+          name="Your name"
+          example="Joe"
+          defaultValue={displayName}
+          onInput={(text) => (displayName = text)}
+        />,
+        <Popup.Textbox
+          name="Host password"
+          defaultValue={password}
+          onInput={(text) => (password = text)}
+        />,
+        <Popup.Checkbox
+          label="Public session"
+          defaultChecked={isPublic}
+          onChange={(checked) => (isPublic = checked)}
+        />,
+        <Popup.Checkbox
+          label="Autoconnect"
+          defaultChecked={autoConnect}
+          onChange={(checked) => (autoConnect = checked)}
         />,
       ],
     );

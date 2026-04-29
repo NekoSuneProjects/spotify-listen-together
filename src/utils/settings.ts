@@ -6,25 +6,43 @@ interface StorageService {
 class Settings {
   settingsVersion: string;
   server: string;
+  sessionId: string;
+  sessionName: string;
+  sessionPublic: boolean;
   name: string;
   login: string;
   password: string;
   autoConnect: boolean;
+  updateNotifications: boolean;
+  autoOpenUpdatePage: boolean;
+  updateRemindUntil: number;
 
   constructor({
     settingsVersion = '1',
     server = '',
+    sessionId = '',
+    sessionName = '',
+    sessionPublic = true,
     name = 'Anonymous',
     login = '',
     password = '',
     autoConnect = false,
+    updateNotifications = true,
+    autoOpenUpdatePage = false,
+    updateRemindUntil = 0,
   }: Partial<Settings> = {}) {
     this.settingsVersion = settingsVersion;
     this.server = server;
+    this.sessionId = sessionId;
+    this.sessionName = sessionName;
+    this.sessionPublic = sessionPublic;
     this.name = name;
     this.login = login;
     this.password = password;
     this.autoConnect = autoConnect;
+    this.updateNotifications = updateNotifications;
+    this.autoOpenUpdatePage = autoOpenUpdatePage;
+    this.updateRemindUntil = updateRemindUntil;
   }
 }
 

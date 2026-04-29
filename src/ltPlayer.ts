@@ -16,9 +16,12 @@ import {
   SpotifyUtils,
   TrackType,
 } from './utils/spotifyUtils';
+import { buildApiUrl } from './utils/sessionUrl';
 
 const AD_CHECK_INTERVAL = 2000;
 const SYNC_INTERVAL = 1000;
+const UPDATE_CHECK_INTERVAL = 5 * 60_000;
+const UPDATE_REMIND_LATER_MS = 6 * 60 * 60_000;
 export default class LTPlayer {
   client = new Client(this);
   patcher = new Patcher(this);
@@ -31,12 +34,90 @@ export default class LTPlayer {
   watchingAd = false;
   trackLoaded = true;
   currentLoadingTrack = '';
+  updateCheckInterval: NodeJS.Timer | null = null;
+  notifiedUpdateVersion = '';
 
   volumeChangeEnabled = false;
   canChangeVolume = true;
   lastVolume: number | null = null;
 
   constructor() {}
+
+  startUpdateChecker() {
+    if (this.updateCheckInterval) {
+      clearInterval(this.updateCheckInterval);
+    }
+
+    this.checkForUpdates();
+    this.updateCheckInterval = setInterval(() => {
+      this.checkForUpdates();
+    }, UPDATE_CHECK_INTERVAL);
+  }
+
+  remindUpdateLater(version: string) {
+    this.notifiedUpdateVersion = version;
+    this.settingsManager.settings.updateRemindUntil =
+      Date.now() + UPDATE_REMIND_LATER_MS;
+    this.settingsManager.saveSettings();
+  }
+
+  async checkForUpdates(forceNotify = false) {
+    const settings = this.settingsManager.settings;
+
+    if (!settings.updateNotifications && !forceNotify) {
+      return;
+    }
+
+    if (!settings.server) {
+      if (forceNotify) {
+        this.ui.bottomMessage('Set a Listen Together server before checking for updates.');
+      }
+      return;
+    }
+
+    try {
+      const response = await fetch(buildApiUrl(settings.server, '/api/version'));
+      if (!response.ok) {
+        return;
+      }
+
+      const data = await response.json();
+      const nextVersion =
+        data.pluginVersion ||
+        data.clientRecommendedVersion ||
+        data.version ||
+        '';
+      const updateUrl =
+        data.updateUrl ||
+        'https://github.com/NekoSuneProjects/spotify-listen-together/releases/latest';
+
+      if (!nextVersion || compareVersions(nextVersion, this.version) <= 0) {
+        if (forceNotify) {
+          this.ui.bottomMessage('Listen Together is up to date.');
+        }
+        return;
+      }
+
+      if (
+        !forceNotify &&
+        Date.now() < settings.updateRemindUntil &&
+        this.notifiedUpdateVersion === nextVersion
+      ) {
+        return;
+      }
+
+      this.notifiedUpdateVersion = nextVersion;
+      if (settings.autoOpenUpdatePage) {
+        window.location.href = updateUrl;
+      } else {
+        this.ui.updateAvailablePopup(nextVersion, updateUrl);
+      }
+    } catch (error) {
+      if (forceNotify) {
+        this.ui.bottomMessage('Could not check Listen Together updates.');
+      }
+    }
+  }
 
   init() {
     this.patcher.patchAll();
@@ -282,4 +363,19 @@ export default class LTPlayer {
       ogPlayerAPI.setVolume(0);
     }
   }
+}
+
+function compareVersions(a: string, b: string) {
+  const left = a.split('.').map((part) => parseInt(part, 10) || 0);
+  const right = b.split('.').map((part) => parseInt(part, 10) || 0);
+  const length = Math.max(left.length, right.length);
+
+  for (let index = 0; index < length; index++) {
+    const diff = (left[index] || 0) - (right[index] || 0);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+
+  return 0;
 }
