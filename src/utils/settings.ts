@@ -16,6 +16,7 @@ class Settings {
   updateNotifications: boolean;
   autoOpenUpdatePage: boolean;
   updateRemindUntil: number;
+  debugSocketEvents: boolean;
 
   constructor({
     settingsVersion = '1',
@@ -30,6 +31,7 @@ class Settings {
     updateNotifications = true,
     autoOpenUpdatePage = false,
     updateRemindUntil = 0,
+    debugSocketEvents = false,
   }: Partial<Settings> = {}) {
     this.settingsVersion = settingsVersion;
     this.server = server;
@@ -43,6 +45,7 @@ class Settings {
     this.updateNotifications = updateNotifications;
     this.autoOpenUpdatePage = autoOpenUpdatePage;
     this.updateRemindUntil = updateRemindUntil;
+    this.debugSocketEvents = debugSocketEvents;
   }
 }
 
@@ -59,11 +62,10 @@ export default class SettingsManager {
     if (storedSettingsString !== null) {
       try {
         const storedSettings = JSON.parse(storedSettingsString);
-        if (storedSettings.settingsVersion === defaults.settingsVersion) {
-          this.settings = new Settings(storedSettings);
-        } else {
-          this.settings = defaults;
-        }
+        this.settings = new Settings({
+          ...storedSettings,
+          settingsVersion: defaults.settingsVersion,
+        });
       } catch (error) {
         console.error('Failed to parse stored settings:', error);
         this.settings = defaults;

@@ -10,16 +10,27 @@ export enum TrackType {
 }
 
 export async function getTrackData(trackUri: string) {
-  if (isTrack(trackUri)) trackUri = trackUri.split(':')[2];
+  const type = getTrackType(trackUri);
+  let endpoint = 'tracks';
+  let id = trackUri;
+
+  if (isSpotifyUri(trackUri)) {
+    id = trackUri.split(':')[2];
+    if (type === TrackType.Episode) {
+      endpoint = 'episodes';
+    } else if (type !== TrackType.Track) {
+      return { error: 'Unsupported Spotify URI type.' };
+    }
+  }
 
   let token = await Spicetify.CosmosAsync.get('sp://auth/v2/token');
-  return await fetch(`https://api.spotify.com/v1/tracks/${trackUri}`, {
+  return await fetch(`https://api.spotify.com/v1/${endpoint}/${id}`, {
     headers: { authorization: 'Bearer ' + token.accessToken },
   }).then((a) => a.json());
 }
 
 export function getCurrentTrackUri(): string {
-  return Spicetify.Platform.PlayerAPI._state.item?.uri || '';
+  return Spicetify.Platform.PlayerAPI?._state?.item?.uri || '';
 }
 
 export function isListenableTrackType(trackType?: TrackType) {
@@ -52,6 +63,18 @@ export function getTrackType(trackUri?: string): TrackType {
 
 export function isTrack(trackUri: string): boolean {
   return (trackUri.match(/:/g) || []).length == 2;
+}
+
+export function isSpotifyUri(trackUri: string): boolean {
+  return /^spotify:[a-z0-9_-]+:[^:]+$/i.test(trackUri || '');
+}
+
+export function isValidSpotifyUri(trackUri: string): boolean {
+  return isSpotifyUri(trackUri);
+}
+
+export function isSpotifyContextUri(trackUri: string): boolean {
+  return /^spotify:(playlist|album):[^:]+$/i.test(trackUri || '');
 }
 
 export function pauseTrack() {
@@ -95,12 +118,12 @@ export class SpotifyUtils {
       console.log(
         `Check loaded: ${getCurrentTrackUri()}===${trackUri}   ${
           Spicetify.Platform.PlayerAPI._state?.item?.name
-        }  ${!Spicetify.Platform.PlayerAPI._state.isBuffering}`,
+        }  ${!Spicetify.Platform.PlayerAPI._state?.isBuffering}`,
       );
       if (
         getCurrentTrackUri() === trackUri &&
         Spicetify.Platform.PlayerAPI._state?.item?.name &&
-        !Spicetify.Platform.PlayerAPI._state.isBuffering
+        !Spicetify.Platform.PlayerAPI._state?.isBuffering
       ) {
         if (this.loadedInterval) clearInterval(this.loadedInterval);
         if (this.timeoutLoadedCallback)

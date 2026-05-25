@@ -7,6 +7,7 @@ import './utils/spotifyUtils';
 import {
   forcePlayTrack,
   getCurrentTrackUri,
+  getTrackProgress,
   getTrackData,
   getTrackType,
   isListenableTrackType,
@@ -17,11 +18,21 @@ import {
   TrackType,
 } from './utils/spotifyUtils';
 import { buildApiUrl } from './utils/sessionUrl';
+import { openExternalUrl } from './utils/openExternalUrl';
 
 const AD_CHECK_INTERVAL = 2000;
 const SYNC_INTERVAL = 1000;
 const UPDATE_CHECK_INTERVAL = 5 * 60_000;
 const UPDATE_REMIND_LATER_MS = 6 * 60 * 60_000;
+const UPDATE_SEEK_THRESHOLD_MS = 1000;
+
+type PendingTrackSync = {
+  trackUri: string;
+  milliseconds: number;
+  paused: boolean;
+  serverEmitTime?: number;
+}
+
 export default class LTPlayer {
   client = new Client(this);
   patcher = new Patcher(this);
@@ -35,6 +46,10 @@ export default class LTPlayer {
   trackLoaded = true;
   currentLoadingTrack = '';
   updateCheckInterval: NodeJS.Timer | null = null;
+  private adCheckInterval: NodeJS.Timer | null = null;
+  private heartbeatInterval: NodeJS.Timer | null = null;
+  private initialized = false;
+  private pendingTrackSync: PendingTrackSync | null = null;
   notifiedUpdateVersion = '';
 
   volumeChangeEnabled = false;
@@ -108,7 +123,7 @@ export default class LTPlayer {
 
       this.notifiedUpdateVersion = nextVersion;
       if (settings.autoOpenUpdatePage) {
-        window.location.href = updateUrl;
+        openExternalUrl(updateUrl);
       } else {
         this.ui.updateAvailablePopup(nextVersion, updateUrl);
       }
@@ -120,16 +135,18 @@ export default class LTPlayer {
   }
 
   init() {
-    this.patcher.patchAll();
-    this.patcher.trackChanged.on((trackUri) => {
-      this.onSongChanged(trackUri!);
-    });
+    if (this.initialized) {
+      return;
+    }
 
-    setInterval(() => {
+    this.patcher.patchAll();
+    this.patcher.trackChanged.on(this.handleTrackChanged);
+
+    this.adCheckInterval = setInterval(() => {
       this.resumeTrackIfAdPlaying();
     }, AD_CHECK_INTERVAL);
 
-    setInterval(() => {
+    this.heartbeatInterval = setInterval(() => {
       this.syncPlaybackHeartbeat();
     }, SYNC_INTERVAL);
 
@@ -137,11 +154,42 @@ export default class LTPlayer {
 
     // For testing
     (<any>Spicetify).OGFunctions = ogPlayerAPI;
+    this.initialized = true;
   }
 
   unload() {
+    if (!this.initialized) {
+      return;
+    }
+
+    this.patcher.trackChanged.off(this.handleTrackChanged);
+    this.clearIntervals();
     this.patcher.unpatchAll();
+    this.initialized = false;
+    this.pendingTrackSync = null;
+    this.trackLoaded = true;
   }
+
+  private clearIntervals() {
+    if (this.adCheckInterval) {
+      clearInterval(this.adCheckInterval);
+      this.adCheckInterval = null;
+    }
+
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+
+    if (this.updateCheckInterval) {
+      clearInterval(this.updateCheckInterval);
+      this.updateCheckInterval = null;
+    }
+  }
+
+  private handleTrackChanged = (trackUri?: string) => {
+    this.onSongChanged(trackUri!);
+  };
 
   private resumeTrackIfAdPlaying() {
     if (this.client.connected && getTrackType() === TrackType.Ad) {
@@ -291,18 +339,62 @@ export default class LTPlayer {
     this.client.socket?.emit('changedSong', trackUri, songInfo);
   }
 
-  onChangeSong(trackUri: string) {
+  onChangeSong(
+    trackUri: string,
+    milliseconds?: number,
+    paused = false,
+    serverEmitTime?: number,
+  ) {
+    const currentTrackUri = getCurrentTrackUri();
+    const compensatedMilliseconds = this.compensateMilliseconds(
+      paused,
+      milliseconds,
+      serverEmitTime,
+    );
+
+    if (currentTrackUri === trackUri) {
+      this.onUpdateSong(paused, compensatedMilliseconds, serverEmitTime);
+      if (this.trackLoaded) {
+        this.emitCurrentSongInfo(trackUri);
+      }
+      return;
+    }
+
     if (this.currentLoadingTrack === trackUri) {
       if (this.trackLoaded) {
         this.emitCurrentSongInfo(this.currentLoadingTrack);
       }
     } else {
+      if (compensatedMilliseconds !== undefined) {
+        this.pendingTrackSync = {
+          trackUri,
+          milliseconds: compensatedMilliseconds,
+          paused,
+          serverEmitTime,
+        };
+      }
       forcePlayTrack(trackUri);
     }
   }
 
-  onUpdateSong(pause: boolean, milliseconds?: number) {
-    if (milliseconds != undefined) ogPlayerAPI.seekTo(milliseconds);
+  onUpdateSong(
+    pause: boolean,
+    milliseconds?: number,
+    serverEmitTime?: number,
+    forceSeek = false,
+  ) {
+    const targetMilliseconds = this.compensateMilliseconds(
+      pause,
+      milliseconds,
+      serverEmitTime,
+    );
+
+    if (targetMilliseconds != undefined) {
+      const driftMs = Math.abs(getTrackProgress() - targetMilliseconds);
+      if (forceSeek || driftMs >= UPDATE_SEEK_THRESHOLD_MS) {
+        ogPlayerAPI.seekTo(targetMilliseconds);
+      }
+    }
 
     if (pause) {
       pauseTrack();
@@ -326,8 +418,18 @@ export default class LTPlayer {
         this.spotifyUtils.onTrackLoaded(trackUri!, () => {
           this.trackLoaded = true;
           if (!this.canControlPlayback()) {
-            pauseTrack();
-            ogPlayerAPI.seekTo(0);
+            const pendingTrackSync = this.consumePendingTrackSync(trackUri!);
+            if (pendingTrackSync) {
+              this.onUpdateSong(
+                pendingTrackSync.paused,
+                pendingTrackSync.milliseconds,
+                pendingTrackSync.serverEmitTime,
+                true,
+              );
+            } else {
+              pauseTrack();
+              ogPlayerAPI.seekTo(0);
+            }
           }
 
           this.emitCurrentSongInfo(trackUri!);
@@ -343,6 +445,30 @@ export default class LTPlayer {
         this.client.socket?.emit('changedSong', trackUri);
       }
     }
+  }
+
+  private compensateMilliseconds(
+    paused: boolean,
+    milliseconds?: number,
+    serverEmitTime?: number,
+  ) {
+    if (milliseconds === undefined) {
+      return undefined;
+    }
+
+    const elapsedMs =
+      !paused && serverEmitTime ? Math.max(Date.now() - serverEmitTime, 0) : 0;
+    return Math.max(milliseconds + elapsedMs, 0);
+  }
+
+  private consumePendingTrackSync(trackUri: string) {
+    if (!this.pendingTrackSync || this.pendingTrackSync.trackUri !== trackUri) {
+      return null;
+    }
+
+    const pendingTrackSync = this.pendingTrackSync;
+    this.pendingTrackSync = null;
+    return pendingTrackSync;
   }
 
   onLogin() {

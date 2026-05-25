@@ -19,6 +19,7 @@ export let ogPlayerAPI: any;
 export default class Patcher {
   private patched = false;
   private lastData: any = null;
+  private subscribedToSongChange = false;
   constructor(public ltPlayer: LTPlayer) {}
 
   private readonly onTrackChanged = new LiteEvent<string>();
@@ -76,9 +77,26 @@ export default class Patcher {
   }
 
   private subscribeToPlayerEvents() {
-    Spicetify.Player.addEventListener('songchange', (event) => {
-      this.trackChangeHandler(event!.data);
-    });
+    if (this.subscribedToSongChange) {
+      return;
+    }
+
+    Spicetify.Player.addEventListener('songchange', this.songChangeHandler);
+    this.subscribedToSongChange = true;
+  }
+
+  private unsubscribeFromPlayerEvents() {
+    if (!this.subscribedToSongChange) {
+      return;
+    }
+
+    Spicetify.Player.removeEventListener('songchange', this.songChangeHandler);
+    this.subscribedToSongChange = false;
+    this.lastData = null;
+  }
+
+  private songChangeHandler = (event?: Event & { data: any }) => {
+    this.trackChangeHandler(event?.data);
   }
 
   private trackChangeHandler = (data: any) => {
@@ -145,6 +163,8 @@ export default class Patcher {
     if (ogPlayerAPI.setVolume) {
       Spicetify.Platform.PlaybackAPI.setVolume = ogPlayerAPI.setVolume;
     }
+
+    this.unsubscribeFromPlayerEvents();
   }
 
   private emitSyncHandler = (e: any, t: any) => {

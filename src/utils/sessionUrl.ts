@@ -44,14 +44,7 @@ export function buildSessionInviteUrl(server: string, sessionId: string) {
 export function buildSessionHostUrl(
   server: string,
   sessionId: string,
-  hostPassword?: string,
+  _hostPassword?: string,
 ) {
-  const inviteUrl = buildSessionInviteUrl(server, sessionId);
-  if (!inviteUrl || !hostPassword) {
-    return inviteUrl;
-  }
-
-  const url = new URL(inviteUrl);
-  url.searchParams.set('hostPassword', hostPassword);
-  return url.toString();
+  return buildSessionInviteUrl(server, sessionId);
 }

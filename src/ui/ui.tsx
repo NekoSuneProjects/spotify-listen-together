@@ -123,7 +123,7 @@ export default class UI {
       'Listen Together Update',
       (btn) => {
         if (btn === 'Update') {
-          window.location.href = updateUrl;
+          openExternalUrl(updateUrl);
         }
 
         if (btn === 'Remind me later') {
@@ -176,8 +176,9 @@ export default class UI {
 
     this.joinSessionPopup((btn, address, sessionId, name, autoConnect) => {
       if (btn === 'Host a server') {
-        window.location.href =
-          'https://render.com/deploy?repo=https://github.com/NekoSuneProjectsForks/spotify-listen-together-server';
+        openExternalUrl(
+          'https://render.com/deploy?repo=https://github.com/NekoSuneProjectsForks/spotify-listen-together-server',
+        );
         return;
       }
 
@@ -237,10 +238,10 @@ export default class UI {
         }
         this.ltPlayer.client.connect(server);
         if (session.hostPassword) {
-          navigator.clipboard?.writeText(hostUrl || session.hostPassword);
+          navigator.clipboard?.writeText(session.hostPassword);
           openExternalUrl(hostUrl);
           this.sessionCreatedPopup(hostUrl, session.hostPassword);
-          this.bottomMessage('Session created. Host password saved and page opened.');
+          this.bottomMessage('Session created. Host password copied and saved.');
         } else {
           this.windowMessage(
             'Session created, but the server did not return a host password. Update/restart the server and try creating a new session.',
@@ -351,7 +352,7 @@ export default class UI {
 
         if (btn === 'Copy URL') {
           navigator.clipboard?.writeText(hostUrl);
-          this.bottomMessage('Host page URL copied.');
+          this.bottomMessage('Invite URL copied.');
         }
 
         if (btn === 'OK') {
@@ -360,7 +361,7 @@ export default class UI {
       },
       ['Open page', 'Copy password', 'Copy URL', 'OK'],
       [
-        <Popup.Text text="Your browser should open the session page with the host password." />,
+        <Popup.Text text="Your browser should open the session page. The host password is shown below and saved in this plugin." />,
         <Popup.Text text={`Host password: ${hostPassword}`} />,
       ],
     );
@@ -370,12 +371,14 @@ export default class UI {
     const settings = this.ltPlayer.settingsManager.settings;
     let updateNotifications = settings.updateNotifications;
     let autoOpenUpdatePage = settings.autoOpenUpdatePage;
+    let debugSocketEvents = settings.debugSocketEvents;
 
     Popup.create(
       'Plugin Settings',
       (btn) => {
         settings.updateNotifications = updateNotifications;
         settings.autoOpenUpdatePage = autoOpenUpdatePage;
+        settings.debugSocketEvents = debugSocketEvents;
         this.ltPlayer.settingsManager.saveSettings();
 
         if (btn === 'Check now') {
@@ -398,6 +401,11 @@ export default class UI {
           defaultChecked={autoOpenUpdatePage}
           onChange={(checked) => (autoOpenUpdatePage = checked)}
         />,
+        <Popup.Checkbox
+          label="Debug socket events"
+          defaultChecked={debugSocketEvents}
+          onChange={(checked) => (debugSocketEvents = checked)}
+        />,
       ],
     );
   }
@@ -417,8 +425,9 @@ export default class UI {
         <Popup.Button
           text={'Github'}
           onClick={() =>
-            (window.location.href =
-              'https://github.com/NekoSuneProjectsForks/spotify-listen-together')
+            openExternalUrl(
+              'https://github.com/NekoSuneProjectsForks/spotify-listen-together',
+            )
           }
         />,
       ],

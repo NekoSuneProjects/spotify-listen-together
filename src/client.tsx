@@ -7,6 +7,8 @@ import {
   forcePlayTrack,
   getCurrentTrackUri,
   getTrackType,
+  isSpotifyContextUri,
+  isValidSpotifyUri,
   isListenableTrackType,
 } from './utils/spotifyUtils';
 import { buildApiUrl, parseSessionTarget } from './utils/sessionUrl';
@@ -24,9 +26,16 @@ export default class Client {
   connected = false;
   socket: Socket | null = null;
   server = '';
+  private keepAliveInterval: NodeJS.Timer | null = null;
 
-  constructor(public ltPlayer: LTPlayer) {
-    setInterval(async () => {
+  constructor(public ltPlayer: LTPlayer) {}
+
+  private startKeepAlive() {
+    if (this.keepAliveInterval) {
+      return;
+    }
+
+    this.keepAliveInterval = setInterval(async () => {
       if (this.connected) {
         try {
           await fetch(this.server);
@@ -35,7 +44,14 @@ export default class Client {
     }, 5 * 60_000);
   }
 
-  connect(server?: string) {
+  private stopKeepAlive() {
+    if (this.keepAliveInterval) {
+      clearInterval(this.keepAliveInterval);
+      this.keepAliveInterval = null;
+    }
+  }
+
+  connect(server?: string, clearTrackAttempt = 0) {
     if (!server) server = this.ltPlayer.settingsManager.settings.server;
 
     const target = parseSessionTarget(server);
@@ -49,12 +65,17 @@ export default class Client {
     }
 
     if (getCurrentTrackUri() != '') {
+      if (clearTrackAttempt >= 30) {
+        this.ltPlayer.ui.bottomMessage('Could not clear the current Spotify track before joining; connecting anyway.');
+      } else {
       forcePlayTrack('');
-      setTimeout(() => this.connect(server), 100);
+        setTimeout(() => this.connect(server, clearTrackAttempt + 1), 100);
       return;
+      }
     }
 
     this.server = server;
+    this.startKeepAlive();
 
     this.connecting = true;
     this.ltPlayer.ui.renderBottomInfo(
@@ -119,31 +140,33 @@ export default class Client {
       );
     });
 
-    this.socket.onAny((ev: string, ...args: any[]) => {
-      const formattedArgs = args.map((arg) => {
-        if (typeof arg === 'object' && arg !== null) {
-          return JSON.stringify(arg, null, 2);
-        } else if (typeof arg === 'string') {
-          return `"${arg}"`;
-        } else if (typeof arg === 'function') {
-          return arg.toString();
-        } else {
-          return String(arg);
-        }
+    if (this.ltPlayer.settingsManager.settings.debugSocketEvents) {
+      this.socket.onAny((ev: string, ...args: any[]) => {
+        const formattedArgs = args.map((arg) => {
+          if (typeof arg === 'object' && arg !== null) {
+            return JSON.stringify(arg, null, 2);
+          } else if (typeof arg === 'string') {
+            return `"${arg}"`;
+          } else if (typeof arg === 'function') {
+            return arg.toString();
+          } else {
+            return String(arg);
+          }
+        });
+
+        const argsString = formattedArgs.join(', ');
+        console.log(`Receiving event "${ev}" with args: ${argsString}`);
       });
+    }
 
-      const argsString = formattedArgs.join(', ');
-      console.log(`Receiving event "${ev}" with args: ${argsString}`);
-    });
-
-    this.socket.on('changeSong', (trackUri: string) => {
+    this.socket.on('changeSong', (trackUri: string, milliseconds?: number, paused?: boolean, serverEmitTime?: number) => {
       if (isListenableTrackType(getTrackType(trackUri)))
-        this.ltPlayer.onChangeSong(trackUri);
+        this.ltPlayer.onChangeSong(trackUri, milliseconds, paused, serverEmitTime);
     });
 
-    this.socket.on('updateSong', (pause: boolean, milliseconds: number) => {
+    this.socket.on('updateSong', (pause: boolean, milliseconds: number, serverEmitTime?: number) => {
       if (isListenableTrackType())
-        this.ltPlayer.onUpdateSong(pause, milliseconds);
+        this.ltPlayer.onUpdateSong(pause, milliseconds, serverEmitTime);
     });
 
     this.socket.on('bottomMessage', (message: string) => {
@@ -186,7 +209,9 @@ export default class Client {
       'songRequested',
       (trackUri: string, trackName: string, fromListener: string) => {
         this.ltPlayer.ui.songRequestPopup(trackName, fromListener, () => {
-          forcePlayTrack(trackUri);
+          if (isListenableTrackType(getTrackType(trackUri))) {
+            forcePlayTrack(trackUri);
+          }
         });
       },
     );
@@ -227,13 +252,20 @@ export default class Client {
     });
 
     this.socket.on('adminPlayTrack', (trackUri: string) => {
-      if (this.ltPlayer.canControlPlayback() && trackUri) {
+      if (
+        this.ltPlayer.canControlPlayback() &&
+        isListenableTrackType(getTrackType(trackUri))
+      ) {
         forcePlayTrack(trackUri);
       }
     });
 
     this.socket.on('adminPlayFallback', (contextUri: string) => {
-      if (this.ltPlayer.canControlPlayback() && contextUri) {
+      if (
+        this.ltPlayer.canControlPlayback() &&
+        isValidSpotifyUri(contextUri) &&
+        isSpotifyContextUri(contextUri)
+      ) {
         forcePlay({ uri: contextUri }, {}, {});
       }
     });
@@ -267,6 +299,7 @@ export default class Client {
     this.connected = false;
     this.ltPlayer.isHost = false;
     this.connecting = false;
+    this.stopKeepAlive();
     this.ltPlayer.unload();
     // this.ltPlayer.ui.menuItems.joinServer?.setName("Join a server")
     // this.ltPlayer.ui.menuItems.requestHost?.setName("Request host");

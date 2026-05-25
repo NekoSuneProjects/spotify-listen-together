@@ -1,5 +1,6 @@
 {
   "name": "Listen Together",
+  "version": "0.5.3",
   "description": "A free alternative to Group Sessions",
   "preview": "icon.png",
   "main": "compiled/listenTogether.js",
